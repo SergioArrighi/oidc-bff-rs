@@ -23,17 +23,28 @@ cargo clippy -p oidc-bff-core -p oidc-bff-axum -p oidc-bff-leptos \
 cargo test -p oidc-bff-core -p oidc-bff-axum -p oidc-bff-leptos
 cargo doc -p oidc-bff-core -p oidc-bff-axum --no-deps
 cargo package -p oidc-bff-core
+cargo package --workspace --no-verify
 cargo audit
 ```
+
+All GitHub Actions are pinned to immutable commits. A `vX.Y.Z` tag whose
+version matches the workspace packages builds the three source archives,
+generates an SPDX JSON SBOM and checksums, uploads one immutable workflow
+artifact, and issues GitHub artifact attestations for every file. Verify that
+workflow and its attestations before publishing any archive to crates.io.
 
 Review every audit result. The currently accepted upstream exception and its
 production impact are recorded in `docs/oidc-bff-security.md`; do not silently
 add new exceptions.
 
-Inspect the core `.crate` archive under `target/package`, publish
+Workspace packaging is required for the initial release because Cargo can
+resolve unpublished sibling packages together; packaging an adapter by itself
+requires `oidc-bff-core` to already exist in the crates.io index. Inspect all
+three `.crate` archives under `target/package`, then publish
 `oidc-bff-core`, and wait until its crates.io index entry is available. Cargo
-cannot package the adapters before that point because their published
-manifests intentionally resolve `oidc-bff-core` from crates.io. Then run:
+cannot verify the adapters in isolation before that point because their
+published manifests intentionally resolve `oidc-bff-core` from crates.io.
+After the index entry appears, run the verified package checks:
 
 ```bash
 cargo package -p oidc-bff-axum

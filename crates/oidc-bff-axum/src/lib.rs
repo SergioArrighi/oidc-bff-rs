@@ -8,6 +8,7 @@ mod error;
 mod http;
 mod provider_http;
 mod session;
+mod session_encryption;
 
 pub use application::{
     AuthenticatedUser, AuthenticationMethod, AuthenticationPrincipalKind, IdentityApplication,
@@ -20,3 +21,7 @@ pub use configuration::{
 pub use error::IdentityError;
 pub use http::{IdentityAuthentication, IdentityHttpApplication};
 pub use session::IdentitySessionLayer;
+pub use session_encryption::{
+    EncryptedSessionStore, SessionEncryptionConfigurationError, SessionEncryptionKey,
+    SessionEncryptionKeyring,
+};

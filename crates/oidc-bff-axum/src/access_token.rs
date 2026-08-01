@@ -273,6 +273,9 @@ impl AccessTokenVerifier {
         }
         let mut decoding_keys = HashMap::with_capacity(set.keys.len());
         for key in &set.keys {
+            if key.common.key_algorithm != Some(KeyAlgorithm::RS256) {
+                continue;
+            }
             let key_id = key
                 .common
                 .key_id
@@ -291,7 +294,6 @@ impl AccessTokenVerifier {
                 .decode(&parameters.e)
                 .map_err(|_| IdentityError::Discovery)?;
             if decoding_keys.contains_key(key_id)
-                || key.common.key_algorithm != Some(KeyAlgorithm::RS256)
                 || !(256..=1024).contains(&modulus.len())
                 || modulus.first().is_none_or(|byte| byte & 0x80 == 0)
                 || exponent.as_slice() != [0x01, 0x00, 0x01]
@@ -316,6 +318,9 @@ impl AccessTokenVerifier {
             }
             let decoding_key = DecodingKey::from_jwk(key).map_err(|_| IdentityError::Discovery)?;
             decoding_keys.insert(key_id.to_owned(), decoding_key);
+        }
+        if decoding_keys.is_empty() {
+            return Err(IdentityError::Discovery);
         }
         Ok(VerifiedKeySet { decoding_keys })
     }
@@ -398,11 +403,15 @@ mod tests {
 
     impl JwksFixture {
         fn key(key_id: &str, modulus_bytes: usize) -> serde_json::Value {
+            Self::rsa_key(key_id, modulus_bytes, "RS256")
+        }
+
+        fn rsa_key(key_id: &str, modulus_bytes: usize, algorithm: &str) -> serde_json::Value {
             serde_json::json!({
                 "kty": "RSA",
                 "use": "sig",
                 "kid": key_id,
-                "alg": "RS256",
+                "alg": algorithm,
                 "n": URL_SAFE_NO_PAD.encode(vec![0x80; modulus_bytes]),
                 "e": URL_SAFE_NO_PAD.encode([0x01, 0x00, 0x01])
             })
@@ -410,6 +419,17 @@ mod tests {
 
         fn set(keys: Vec<serde_json::Value>) -> JwkSet {
             serde_json::from_value(serde_json::json!({ "keys": keys })).unwrap()
+        }
+
+        fn unrelated_key(key_id: &str, algorithm: &str, key_type: &str) -> serde_json::Value {
+            serde_json::json!({
+                "kty": key_type,
+                "use": "sig",
+                "kid": key_id,
+                "alg": algorithm,
+                "crv": "Ed25519",
+                "x": URL_SAFE_NO_PAD.encode([0x80; 32])
+            })
         }
     }
 
@@ -519,6 +539,24 @@ mod tests {
 
         let valid = JwksFixture::set(vec![JwksFixture::key("current", 256)]);
         assert!(AccessTokenVerifier::validate_set(valid).is_ok());
+    }
+
+    #[test]
+    fn selects_rs256_keys_from_a_multi_algorithm_provider_set() {
+        let provider_set = JwksFixture::set(vec![
+            JwksFixture::key("current", 256),
+            JwksFixture::rsa_key("rs384", 256, "RS384"),
+            JwksFixture::rsa_key("rs512", 256, "RS512"),
+            JwksFixture::unrelated_key("eddsa", "EdDSA", "OKP"),
+        ]);
+        let verified = AccessTokenVerifier::validate_set(provider_set).unwrap();
+
+        assert_eq!(verified.decoding_keys.len(), 1);
+        assert!(verified.decoding_keys.contains_key("current"));
+
+        let unsupported_only =
+            JwksFixture::set(vec![JwksFixture::unrelated_key("eddsa", "EdDSA", "OKP")]);
+        assert!(AccessTokenVerifier::validate_set(unsupported_only).is_err());
     }
 
     #[test]

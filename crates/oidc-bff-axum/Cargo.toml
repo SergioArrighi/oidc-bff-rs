@@ -15,9 +15,12 @@ categories = ["authentication", "web-programming::http-server"]
 all-features = true
 
 [dependencies]
+aes-gcm.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 futures.workspace = true
+getrandom.workspace = true
 jsonwebtoken.workspace = true
 openidconnect.workspace = true
 # `openidconnect` currently uses reqwest 0.12 internally. Declaring that exact

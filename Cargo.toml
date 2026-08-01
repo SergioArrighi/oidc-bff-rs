@@ -14,9 +14,12 @@ license = "MIT"
 repository = "https://github.com/SergioArrighi/oidc-bff-rs"
 
 [workspace.dependencies]
+aes-gcm = { version = "0.10", features = ["std", "zeroize"] }
+async-trait = "0.1"
 axum = { version = "0.8.6", features = ["json", "macros"] }
 base64 = "0.22"
 futures = "0.3"
+getrandom = "0.3"
 gloo-net = "0.6"
 http-body-util = "0.1"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["aws_lc_rs"] }

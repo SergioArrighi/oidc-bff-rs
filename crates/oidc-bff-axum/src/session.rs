@@ -28,7 +28,7 @@ impl std::fmt::Debug for PendingLogin {
             .field("state", &"[REDACTED]")
             .field("nonce", &"[REDACTED]")
             .field("pkce_verifier", &"[REDACTED]")
-            .field("return_to", &self.return_to)
+            .field("return_to", &"[REDACTED]")
             .field("created_at_epoch_seconds", &self.created_at_epoch_seconds)
             .finish()
     }
@@ -54,8 +54,8 @@ impl std::fmt::Debug for AuthenticatedIdentitySession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AuthenticatedIdentitySession")
-            .field("profile", &self.profile)
-            .field("authentication_session_id", &self.authentication_session_id)
+            .field("profile", &"[REDACTED]")
+            .field("authentication_session_id", &"[REDACTED]")
             .field("anti_forgery_token", &"[REDACTED]")
             .field("expires_at_epoch_seconds", &self.expires_at_epoch_seconds)
             .finish()
@@ -166,5 +166,54 @@ impl IdentitySessionLayer {
     /// Builds an in-memory session layer for tests and local development.
     pub fn memory(&self) -> SessionManagerLayer<MemoryStore> {
         self.store(MemoryStore::default())
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use oidc_bff_core::{EmailAddress, UserProfile, UserSubject};
+
+    use super::{AuthenticatedIdentitySession, PendingLogin};
+
+    #[test]
+    fn secret_bearing_session_debug_output_is_redacted() {
+        let pending = PendingLogin {
+            state: "state-secret".to_owned(),
+            nonce: "nonce-secret".to_owned(),
+            pkce_verifier: "pkce-secret".to_owned(),
+            return_to: "/q/public-capability".to_owned(),
+            created_at_epoch_seconds: 1,
+        };
+        let authenticated = AuthenticatedIdentitySession {
+            profile: UserProfile {
+                subject: UserSubject::parse("subject-secret").unwrap(),
+                email: Some(EmailAddress::parse("private@example.com").unwrap()),
+                email_verified: true,
+                preferred_username: None,
+                given_name: None,
+                family_name: None,
+                display_name: "Private Name".to_owned(),
+                roles: Vec::new(),
+                groups: Vec::new(),
+            },
+            authentication_session_id: "authentication-secret".to_owned(),
+            anti_forgery_token: "anti-forgery-secret".to_owned(),
+            expires_at_epoch_seconds: 2,
+        };
+
+        let output = format!("{pending:?} {authenticated:?}");
+        for secret in [
+            "state-secret",
+            "nonce-secret",
+            "pkce-secret",
+            "public-capability",
+            "subject-secret",
+            "private@example.com",
+            "Private Name",
+            "authentication-secret",
+            "anti-forgery-secret",
+        ] {
+            assert!(!output.contains(secret));
+        }
     }
 }

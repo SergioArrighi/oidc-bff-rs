@@ -56,6 +56,10 @@ Practices (RFC 8725), PKCE (RFC 7636), and OpenID Connect Core 1.0.
   relying party with its `client_id`. Secret-bearing session, callback,
   authenticated-user, client-credential, and logout values are redacted from
   `Debug` output.
+- Application-level AES-256-GCM encryption bounds each serialized session to
+  one MiB before persistence, authenticates the visible id and expiry as
+  additional data, and rejects oversized envelopes before base64 decoding.
+  Rotation supports one active and at most four decryption-only prior keys.
 - A local session is flushed on logout. It expires at the earlier of the ID
   token expiry and the configured absolute lifetime, which cannot exceed two
   hours. The BFF does not request or retain refresh tokens and discards the
