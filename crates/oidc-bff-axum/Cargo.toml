@@ -1,0 +1,42 @@
+[package]
+name = "oidc-bff-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "Security-focused OIDC BFF sessions and OAuth resource-server middleware for Axum"
+readme = "README.md"
+documentation = "https://docs.rs/oidc-bff-axum"
+keywords = ["oidc", "oauth2", "axum", "bff", "authentication"]
+categories = ["authentication", "web-programming::http-server"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+futures.workspace = true
+jsonwebtoken.workspace = true
+openidconnect.workspace = true
+# `openidconnect` currently uses reqwest 0.12 internally. Declaring that exact
+# transport enables its streaming body API so JWKS downloads can be hard-capped.
+openidconnect-reqwest-stream = { package = "reqwest", version = "0.12.28", default-features = false, features = ["stream"] }
+oidc-bff-core = { version = "0.1.0", path = "../oidc-bff-core" }
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-sessions.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+rand = "0.8"
+rsa = "0.9.10"
+tower.workspace = true

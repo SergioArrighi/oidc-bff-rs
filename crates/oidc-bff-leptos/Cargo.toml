@@ -1,0 +1,27 @@
+[package]
+name = "oidc-bff-leptos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "Leptos identity gate and session client for server-side OIDC BFF applications"
+readme = "README.md"
+documentation = "https://docs.rs/oidc-bff-leptos"
+keywords = ["oidc", "oauth2", "leptos", "bff", "authentication"]
+categories = ["authentication", "web-programming"]
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["wasm32-unknown-unknown"]
+
+[dependencies]
+gloo-net.workspace = true
+js-sys.workspace = true
+leptos.workspace = true
+oidc-bff-core = { version = "0.1.0", path = "../oidc-bff-core" }
+serde_json.workspace = true
+thiserror.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys.workspace = true

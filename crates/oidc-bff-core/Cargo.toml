@@ -1,0 +1,23 @@
+[package]
+name = "oidc-bff-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "Provider-neutral session and profile contracts for server-side OIDC browser applications"
+readme = "README.md"
+documentation = "https://docs.rs/oidc-bff-core"
+keywords = ["oidc", "oauth2", "bff", "authentication", "identity"]
+categories = ["authentication", "web-programming"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+serde = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
