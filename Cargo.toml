@@ -34,7 +34,7 @@ thiserror = "2"
 time = { version = "0.3.44", features = ["serde"] }
 tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
-tower-sessions = { version = "0.14", features = ["signed"] }
+tower-sessions = { version = "0.15", features = ["signed"] }
 url = "2.5"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
