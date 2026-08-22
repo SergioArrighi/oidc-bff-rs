@@ -40,6 +40,7 @@ struct ProviderState {
 
 struct TestProvider {
     issuer: String,
+    backchannel_base_url: Option<String>,
     nonce: Arc<Mutex<Option<String>>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -58,12 +59,18 @@ struct IdentityTokenClaims {
 }
 
 impl TestProvider {
-    async fn start() -> Self {
+    async fn start_with_distinct_backchannel() -> Self {
+        Self::start_with_issuer(Some("http://localhost:65534".to_owned())).await
+    }
+
+    async fn start_with_issuer(public_issuer: Option<String>) -> Self {
         let private_key = RsaPrivateKey::new(&mut OsRng, 2_048).unwrap();
         let public_key = private_key.to_public_key();
         let private_key = private_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let backchannel_base_url = format!("http://{}", listener.local_addr().unwrap());
+        let issuer = public_issuer.unwrap_or_else(|| backchannel_base_url.clone());
+        let distinct_backchannel = (issuer != backchannel_base_url).then_some(backchannel_base_url);
         let nonce = Arc::new(Mutex::new(None));
         let state = ProviderState {
             issuer: issuer.clone(),
@@ -88,20 +95,29 @@ impl TestProvider {
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Self {
             issuer,
+            backchannel_base_url: distinct_backchannel,
             nonce,
             task,
         }
     }
 
     fn configuration(&self) -> IdentityConfiguration {
+        let provider = ProviderConfiguration::new(
+            self.issuer.parse().unwrap(),
+            "browser-client",
+            ClientSecretCredential::new("test-client-secret-with-32-bytes-minimum").unwrap(),
+            format!("{}/account", self.issuer).parse().unwrap(),
+        )
+        .unwrap();
+        let provider = if let Some(backchannel_base_url) = &self.backchannel_base_url {
+            provider
+                .with_backchannel_base_url(backchannel_base_url.parse().unwrap())
+                .unwrap()
+        } else {
+            provider
+        };
         IdentityConfiguration::new(
-            ProviderConfiguration::new(
-                self.issuer.parse().unwrap(),
-                "browser-client",
-                ClientSecretCredential::new("test-client-secret-with-32-bytes-minimum").unwrap(),
-                format!("{}/account", self.issuer).parse().unwrap(),
-            )
-            .unwrap(),
+            provider,
             BrowserApplicationConfiguration::new(
                 "http://127.0.0.1:3000/".parse().unwrap(),
                 "http://127.0.0.1:3000/auth/callback".parse().unwrap(),
@@ -288,7 +304,7 @@ fn session_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
 
 #[tokio::test]
 async fn authorization_code_session_and_logout_round_trip() {
-    let provider = TestProvider::start().await;
+    let provider = TestProvider::start_with_distinct_backchannel().await;
     let configuration = provider.configuration();
     let identity = IdentityApplication::discover(configuration.clone())
         .await
@@ -396,6 +412,10 @@ async fn authorization_code_session_and_logout_round_trip() {
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        authorization_url.origin().ascii_serialization(),
+        provider.issuer
+    );
     let query = authorization_url
         .query_pairs()
         .into_owned()

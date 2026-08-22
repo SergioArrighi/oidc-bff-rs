@@ -107,7 +107,9 @@ impl IdentityApplication {
             .end_session_endpoint
             .as_ref()
             .map(|endpoint| endpoint.url().to_owned());
-        let jwks_url = provider_metadata.jwks_uri().url().to_owned();
+        let jwks_url = configuration
+            .provider_transport_endpoint(provider_metadata.jwks_uri().url())
+            .map_err(|error| IdentityError::Configuration(error.to_string()))?;
         let access_token_verifier = AccessTokenVerifier::discover(
             http_client.raw().clone(),
             jwks_url,
@@ -407,11 +409,11 @@ impl IdentityApplication {
     ) -> Result<ProviderMetadataWithLogout, IdentityError> {
         let issuer = IssuerUrl::new(configuration.provider().issuer().to_string())
             .map_err(|error| IdentityError::Configuration(error.to_string()))?;
-        let discovery_url = issuer
+        let public_discovery_url = issuer
             .join(".well-known/openid-configuration")
             .map_err(|_| IdentityError::Discovery)?;
-        configuration
-            .validate_provider_endpoint(&discovery_url)
+        let discovery_url = configuration
+            .provider_transport_endpoint(&public_discovery_url)
             .map_err(|error| IdentityError::Configuration(error.to_string()))?;
         let mut metadata: ProviderMetadataWithLogout = http_client
             .get_discovery_document(&discovery_url)
@@ -424,14 +426,26 @@ impl IdentityApplication {
         // upstream convenience discovery fetches JWKS before returning metadata, which
         // is too late for this same-origin SSRF boundary.
         Self::validate_provider_metadata(configuration, &metadata)?;
+        let jwks_transport_url = configuration
+            .provider_transport_endpoint(metadata.jwks_uri().url())
+            .map_err(|error| IdentityError::Configuration(error.to_string()))?;
         let jwks_document: serde_json::Value = http_client
-            .get_jwks_document(metadata.jwks_uri().url())
+            .get_jwks_document(&jwks_transport_url)
             .await
             .map_err(|_| IdentityError::Discovery)?;
         AccessTokenVerifier::validate_jwks_document(&jwks_document)?;
         let jwks: CoreJsonWebKeySet =
             serde_json::from_value(jwks_document).map_err(|_| IdentityError::Discovery)?;
         metadata = metadata.set_jwks(jwks);
+        if let Some(token_endpoint) = metadata.token_endpoint() {
+            let token_transport_url = configuration
+                .provider_transport_endpoint(token_endpoint.url())
+                .map_err(|error| IdentityError::Configuration(error.to_string()))?;
+            metadata = metadata.set_token_endpoint(Some(
+                openidconnect::TokenUrl::new(token_transport_url.to_string())
+                    .map_err(|error| IdentityError::Configuration(error.to_string()))?,
+            ));
+        }
         Ok(metadata)
     }
 

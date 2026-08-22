@@ -15,6 +15,12 @@ JWKS, and optional logout endpoints; support `client_secret_basic`, PKCE S256,
 and RS256 ID tokens; and issue RS256 JWT access tokens with the configured
 `typ`, issuer, audience, `iat`, expiry, and `azp`.
 
+Containerized deployments may add
+`ProviderConfiguration::with_backchannel_base_url` to fetch discovery, exchange
+codes, and refresh JWKS through a private service origin. The discovery
+document and every advertised endpoint must still belong to the public issuer;
+browser redirects and JWT issuer validation never use the backchannel origin.
+
 ## Axum integration
 
 ```rust,no_run

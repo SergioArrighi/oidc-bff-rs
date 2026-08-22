@@ -24,6 +24,12 @@ Practices (RFC 8725), PKCE (RFC 7636), and OpenID Connect Core 1.0.
   configured deployment transport and the issuer origin. This is a deliberate
   SSRF and token-exfiltration restriction. Discovery metadata is parsed and
   validated before the first request to its JWKS URI.
+- An operator-configured backchannel base URL may replace only the transport
+  origin used for discovery, token exchange, and JWKS retrieval. Its path must
+  match the public issuer path and its production transport must remain HTTPS.
+  Provider-advertised endpoints are validated against the public issuer before
+  this deterministic rewrite; authorization/logout redirects and JWT issuer
+  validation always retain the public origin.
 - ID tokens are pinned to RS256, issuer, audience, nonce, expiry, and optional
   access-token hash validation. Algorithms advertised by a provider do not
   widen the accepted set.
@@ -125,7 +131,8 @@ A deployment is not production-ready unless all of these are true:
   Workload bearer tokens must remain on protected server-to-server channels
   and should have short provider lifetimes.
 - The provider endpoint same-origin rule intentionally excludes OIDC providers
-  whose discovery document delegates endpoints to other origins.
+  whose discovery document delegates endpoints to other origins. A configured
+  backchannel is not provider delegation and never changes advertised metadata.
 
 ## Dependency advisory
 

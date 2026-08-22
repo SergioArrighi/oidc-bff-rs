@@ -43,6 +43,7 @@ impl fmt::Debug for ClientSecretCredential {
 /// OIDC provider and confidential relying-party registration.
 pub struct ProviderConfiguration {
     issuer: Url,
+    backchannel_base_url: Option<Url>,
     client_id: String,
     client_secret: ClientSecretCredential,
     account_url: Url,
@@ -58,6 +59,7 @@ impl ProviderConfiguration {
     ) -> Result<Self, ConfigurationError> {
         let configuration = Self {
             issuer,
+            backchannel_base_url: None,
             client_id: client_id.into(),
             client_secret,
             account_url,
@@ -66,8 +68,24 @@ impl ProviderConfiguration {
         Ok(configuration)
     }
 
+    /// Uses a distinct server-to-server origin for discovery, token exchange,
+    /// and JWKS retrieval while retaining `issuer` for browser redirects and
+    /// token validation.
+    pub fn with_backchannel_base_url(
+        mut self,
+        backchannel_base_url: Url,
+    ) -> Result<Self, ConfigurationError> {
+        self.backchannel_base_url = Some(backchannel_base_url);
+        self.validate_identifiers()?;
+        Ok(self)
+    }
+
     pub(crate) fn issuer(&self) -> &Url {
         &self.issuer
+    }
+
+    pub(crate) fn backchannel_base_url(&self) -> Option<&Url> {
+        self.backchannel_base_url.as_ref()
     }
 
     pub(crate) fn client_id(&self) -> &str {
@@ -86,6 +104,13 @@ impl ProviderConfiguration {
         IdentityConfiguration::validate_identifier(&self.client_id, "provider.client_id")?;
         if self.issuer.query().is_some() {
             return Err(ConfigurationError::Invalid("provider.issuer"));
+        }
+        if self
+            .backchannel_base_url
+            .as_ref()
+            .is_some_and(|url| url.query().is_some())
+        {
+            return Err(ConfigurationError::Invalid("provider.backchannel_base_url"));
         }
         Ok(())
     }
@@ -397,6 +422,13 @@ impl IdentityConfiguration {
         ] {
             Self::validate_url(url, field, self.cookie.mode)?;
         }
+        if let Some(backchannel_base_url) = self.provider.backchannel_base_url() {
+            Self::validate_backchannel_url(
+                backchannel_base_url,
+                self.provider.issuer(),
+                self.cookie.mode,
+            )?;
+        }
         Ok(())
     }
 
@@ -408,6 +440,27 @@ impl IdentityConfiguration {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn provider_transport_endpoint(
+        &self,
+        public_endpoint: &Url,
+    ) -> Result<Url, ConfigurationError> {
+        self.validate_provider_endpoint(public_endpoint)?;
+        let Some(backchannel_base_url) = self.provider.backchannel_base_url() else {
+            return Ok(public_endpoint.clone());
+        };
+        let mut transport_endpoint = public_endpoint.clone();
+        transport_endpoint
+            .set_scheme(backchannel_base_url.scheme())
+            .map_err(|()| ConfigurationError::Invalid("provider.backchannel_base_url"))?;
+        transport_endpoint
+            .set_host(backchannel_base_url.host_str())
+            .map_err(|_| ConfigurationError::Invalid("provider.backchannel_base_url"))?;
+        transport_endpoint
+            .set_port(backchannel_base_url.port())
+            .map_err(|()| ConfigurationError::Invalid("provider.backchannel_base_url"))?;
+        Ok(transport_endpoint)
     }
 
     fn validate_identifier(value: &str, field: &'static str) -> Result<(), ConfigurationError> {
@@ -440,6 +493,28 @@ impl IdentityConfiguration {
             || url.fragment().is_some()
         {
             return Err(ConfigurationError::Invalid(field));
+        }
+        Ok(())
+    }
+
+    fn validate_backchannel_url(
+        url: &Url,
+        issuer: &Url,
+        mode: DeploymentMode,
+    ) -> Result<(), ConfigurationError> {
+        let transport_is_valid = match mode {
+            DeploymentMode::Production => url.scheme() == "https",
+            DeploymentMode::LoopbackDevelopment => matches!(url.scheme(), "http" | "https"),
+        };
+        if !transport_is_valid
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.path() != issuer.path()
+        {
+            return Err(ConfigurationError::Invalid("provider.backchannel_base_url"));
         }
         Ok(())
     }
@@ -560,6 +635,77 @@ mod tests {
                 "https://app.example.com/".parse().unwrap(),
             ),
             Err(ConfigurationError::Invalid("browser.redirect_uri"))
+        ));
+    }
+
+    #[test]
+    fn loopback_development_accepts_an_explicit_internal_backchannel() {
+        let configuration = IdentityConfiguration::new(
+            ProviderConfiguration::new(
+                "http://localhost:18090/auth/v1/".parse().unwrap(),
+                "browser-client",
+                ClientSecretCredential::new("a".repeat(32)).unwrap(),
+                "http://localhost:18090/auth/v1/account".parse().unwrap(),
+            )
+            .unwrap()
+            .with_backchannel_base_url("http://identity-authority:18090/auth/v1/".parse().unwrap())
+            .unwrap(),
+            BrowserApplicationConfiguration::new(
+                "http://localhost:3000/".parse().unwrap(),
+                "http://localhost:3000/auth/callback".parse().unwrap(),
+                "http://localhost:3000/".parse().unwrap(),
+            )
+            .unwrap(),
+            ResourceServerConfiguration::new(
+                "application-api",
+                "browser-client",
+                "automation-client",
+                "application_mcp",
+                "JWT",
+            )
+            .unwrap(),
+            SessionCookieConfiguration::loopback_development("backchannel", 600, 1_200).unwrap(),
+        )
+        .unwrap();
+        let public_endpoint: Url = "http://localhost:18090/auth/v1/oidc/token".parse().unwrap();
+        assert_eq!(
+            configuration
+                .provider_transport_endpoint(&public_endpoint)
+                .unwrap()
+                .as_str(),
+            "http://identity-authority:18090/auth/v1/oidc/token"
+        );
+    }
+
+    #[test]
+    fn backchannel_must_match_the_issuer_path_and_production_transport() {
+        let fixture = ConfigurationFixture::production();
+        let wrong_path = IdentityConfiguration::new(
+            fixture
+                .provider
+                .clone()
+                .with_backchannel_base_url("https://identity.internal/another/".parse().unwrap())
+                .unwrap(),
+            fixture.browser.clone(),
+            fixture.resource_server.clone(),
+            fixture.cookie.clone(),
+        );
+        assert!(matches!(
+            wrong_path,
+            Err(ConfigurationError::Invalid("provider.backchannel_base_url"))
+        ));
+        let insecure_transport = IdentityConfiguration::new(
+            fixture
+                .provider
+                .with_backchannel_base_url("http://identity.internal/".parse().unwrap())
+                .unwrap(),
+            fixture.browser,
+            fixture.resource_server,
+            fixture.cookie,
+        );
+        assert!(matches!(
+            insecure_transport,
+            Err(ConfigurationError::Invalid("provider.backchannel_base_url"))
         ));
     }
 }
