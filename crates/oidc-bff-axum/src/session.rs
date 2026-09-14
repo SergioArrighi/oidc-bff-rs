@@ -12,6 +12,11 @@ use crate::{IdentityError, SessionCookieConfiguration};
 const PENDING_LOGIN_KEY: &str = "identity.pending_login";
 const AUTHENTICATED_SESSION_KEY: &str = "identity.authenticated";
 
+mod live_login;
+pub use live_login::{
+    CurrentBrowserLogin, LiveBrowserLogin, LiveBrowserLoginError, LiveBrowserLoginLimits,
+};
+
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct PendingLogin {
     pub state: String,

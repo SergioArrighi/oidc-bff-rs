@@ -20,6 +20,11 @@ This repository is intentionally application- and agent-runtime-neutral. Host
 authorization policy, reverse proxies, agent identity, and workload topology
 belong to the integrating application or platform.
 
+For long-running server operations, Axum integrations can use
+[live browser-login observations](docs/live-browser-login.md) to recheck the
+original persisted login without renewing it. This supplements, rather than
+replaces, the host's current authorization checks.
+
 ## Development
 
 ```bash

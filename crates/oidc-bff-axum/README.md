@@ -86,4 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 not production storage. Read the repository
 [production security profile](../../docs/oidc-bff-security.md) before deploying.
 
+For long-running native operations, the optional use of
+[`LiveBrowserLogin`](../../docs/live-browser-login.md) provides fresh, read-only
+observations of an exact persisted browser login. It does not renew sessions or
+replace application authorization and provider-revocation policy.
+
 Licensed under the MIT License.

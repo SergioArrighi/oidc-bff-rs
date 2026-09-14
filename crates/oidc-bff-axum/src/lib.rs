@@ -20,7 +20,10 @@ pub use configuration::{
 };
 pub use error::IdentityError;
 pub use http::{IdentityAuthentication, IdentityHttpApplication};
-pub use session::IdentitySessionLayer;
+pub use session::{
+    CurrentBrowserLogin, IdentitySessionLayer, LiveBrowserLogin, LiveBrowserLoginError,
+    LiveBrowserLoginLimits,
+};
 pub use session_encryption::{
     EncryptedSessionStore, SessionEncryptionConfigurationError, SessionEncryptionKey,
     SessionEncryptionKeyring,
