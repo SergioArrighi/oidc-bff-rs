@@ -40,6 +40,6 @@ zeroize.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-rand = "0.8"
+rand = "0.10"
 rsa = "0.9.10"
 tower.workspace = true
