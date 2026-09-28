@@ -348,7 +348,7 @@ impl SessionCookieConfiguration {
             return Err(ConfigurationError::Invalid("session.cookie_name"));
         }
         if !(300..=7_200).contains(&self.inactivity_seconds)
-            || !(300..=7_200).contains(&self.absolute_lifetime_seconds)
+            || !(300..=86_400).contains(&self.absolute_lifetime_seconds)
             || self.inactivity_seconds as u64 > self.absolute_lifetime_seconds
         {
             return Err(ConfigurationError::Invalid("session.lifetime"));

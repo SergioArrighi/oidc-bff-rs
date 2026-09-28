@@ -2,7 +2,8 @@
 
 `oidc-bff-rs` is a session BFF for an application whose resource server is
 co-located with the BFF. It is not an authorization server, identity provider,
-token vault, generic API proxy, or refresh-token client.
+generic token vault, or generic API proxy. Its one refresh-token use is narrowly
+bound to renewing the same encrypted server-side browser session.
 
 The profile is based on OAuth 2.0 Security Best Current Practice (RFC 9700),
 OAuth 2.0 for Browser-Based Applications (RFC 10017), JWT Best Current
@@ -57,8 +58,10 @@ Practices (RFC 8725), PKCE (RFC 7636), and OpenID Connect Core 1.0.
   deserialization. The Leptos client reads response streams incrementally and
   stops at 64 KiB; it rejects cross-origin endpoint configuration and HTTP
   redirects.
-- OAuth access, refresh, and ID tokens are not retained in browser sessions or
-  exposed by session/logout responses. RP-initiated logout identifies the
+- OAuth access and ID tokens are not retained in browser sessions or exposed by
+  session/logout responses. A rotating refresh credential and original nonce
+  may be retained only in the encrypted server-side record; neither is exposed
+  to the browser. RP-initiated logout identifies the
   relying party with its `client_id`. Secret-bearing session, callback,
   authenticated-user, client-credential, and logout values are redacted from
   `Debug` output.
@@ -66,10 +69,15 @@ Practices (RFC 8725), PKCE (RFC 7636), and OpenID Connect Core 1.0.
   one MiB before persistence, authenticates the visible id and expiry as
   additional data, and rejects oversized envelopes before base64 decoding.
   Rotation supports one active and at most four decryption-only prior keys.
-- A local session is flushed on logout. It expires at the earlier of the ID
-  token expiry and the configured absolute lifetime, which cannot exceed two
-  hours. The BFF does not request or retain refresh tokens and discards the
-  authorization response access token after validating `at_hash` when present.
+- A local session is flushed on logout and has a fixed configured absolute
+  lifetime of at most 24 hours (ClustEU defaults to 12 hours). If the provider issues no refresh credential,
+  that deadline is shortened to the initial ID-token expiry. Renewable live
+  operations refresh before provider expiry but do not renew inactivity. Only
+  CSRF-protected browser activity renews the stored deadline and browser cookie.
+  Status reads do not extend sessions. These operations can
+  never move the fixed local deadline. Refreshed ID tokens retain strict
+  signature, issuer, audience, subject, expiry, optional nonce, and optional
+  `at_hash` validation. The authorization response access token is discarded.
 
 SameSite is Lax because the provider's top-level authorization redirect must
 carry the pending-login cookie back to `/auth/callback`. The per-session token
@@ -84,9 +92,10 @@ server-side session. The browser receives a bounded user projection and an
 anti-forgery token; it never receives an OAuth access token, refresh token,
 client secret, ID token, or session-store record identifier.
 
-The server session record contains only the projected profile, anti-forgery
-value, random authentication binding, and expiry. Treat the session store as
-confidential identity data even though it contains no OAuth token.
+The server session record contains the projected profile, anti-forgery value,
+random authentication binding, fixed/local identity deadlines and, when the
+provider supplies one, a rotating refresh credential plus original nonce.
+Treat the encrypted session store as confidential OAuth identity data.
 
 ## Mandatory deployment gates
 
@@ -99,6 +108,8 @@ A deployment is not production-ready unless all of these are true:
 3. The `tower-sessions` store is durable, shared by every application replica,
    encrypted at rest and in backups, access-controlled, and configured to
    delete expired sessions. `MemoryStore` is not used.
+   Refresh rotation is process-serialized in this release, so renewable live
+   operations require one active BFF replica until the store offers atomic CAS.
 4. `/auth/*` and cookie-authenticated application routes do not have permissive
    CORS. In particular, no untrusted origin may read `/auth/session` or submit
    credentialed requests.

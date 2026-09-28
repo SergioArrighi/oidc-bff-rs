@@ -29,6 +29,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+use tower_sessions::{MemoryStore, Session, SessionStore, session::Id};
 
 #[derive(Clone)]
 struct ProviderState {
@@ -36,12 +37,14 @@ struct ProviderState {
     jwks: Value,
     private_key: Arc<Vec<u8>>,
     nonce: Arc<Mutex<Option<String>>>,
+    refreshes: Arc<AtomicUsize>,
 }
 
 struct TestProvider {
     issuer: String,
     backchannel_base_url: Option<String>,
     nonce: Arc<Mutex<Option<String>>>,
+    refreshes: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -52,7 +55,8 @@ struct IdentityTokenClaims {
     sub: String,
     exp: u64,
     iat: u64,
-    nonce: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
     email: String,
     email_verified: bool,
     preferred_username: String,
@@ -72,6 +76,7 @@ impl TestProvider {
         let issuer = public_issuer.unwrap_or_else(|| backchannel_base_url.clone());
         let distinct_backchannel = (issuer != backchannel_base_url).then_some(backchannel_base_url);
         let nonce = Arc::new(Mutex::new(None));
+        let refreshes = Arc::new(AtomicUsize::new(0));
         let state = ProviderState {
             issuer: issuer.clone(),
             jwks: json!({
@@ -86,6 +91,7 @@ impl TestProvider {
             }),
             private_key: Arc::new(private_key),
             nonce: Arc::clone(&nonce),
+            refreshes: Arc::clone(&refreshes),
         };
         let router = Router::new()
             .route("/.well-known/openid-configuration", get(Self::discovery))
@@ -97,6 +103,7 @@ impl TestProvider {
             issuer,
             backchannel_base_url: distinct_backchannel,
             nonce,
+            refreshes,
             task,
         }
     }
@@ -132,7 +139,8 @@ impl TestProvider {
                 "at+jwt",
             )
             .unwrap(),
-            SessionCookieConfiguration::loopback_development("browser-flow", 3_600, 7_200).unwrap(),
+            SessionCookieConfiguration::loopback_development("browser-flow", 3_600, 43_200)
+                .unwrap(),
         )
         .unwrap()
     }
@@ -166,22 +174,40 @@ impl TestProvider {
             base64::engine::general_purpose::STANDARD
                 .encode("browser-client:test-client-secret-with-32-bytes-minimum")
         );
-        if form.get("grant_type").map(String::as_str) != Some("authorization_code")
-            || form.get("code").map(String::as_str) != Some("test-code")
-            || form.get("code_verifier").is_none_or(String::is_empty)
-            || headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                != Some(expected_authorization.as_str())
+        if headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            != Some(expected_authorization.as_str())
         {
             return Err(StatusCode::BAD_REQUEST);
         }
-        let nonce = state
-            .nonce
-            .lock()
-            .await
-            .clone()
-            .ok_or(StatusCode::CONFLICT)?;
+        let (nonce, refresh_token) = match form.get("grant_type").map(String::as_str) {
+            Some("authorization_code")
+                if form.get("code").map(String::as_str) == Some("test-code")
+                    && form
+                        .get("code_verifier")
+                        .is_some_and(|value| !value.is_empty()) =>
+            {
+                (
+                    Some(
+                        state
+                            .nonce
+                            .lock()
+                            .await
+                            .clone()
+                            .ok_or(StatusCode::CONFLICT)?,
+                    ),
+                    "refresh-token-1".to_owned(),
+                )
+            }
+            Some("refresh_token")
+                if form.get("refresh_token").map(String::as_str) == Some("refresh-token-1") =>
+            {
+                state.refreshes.fetch_add(1, Ordering::SeqCst);
+                (None, "refresh-token-2".to_owned())
+            }
+            _ => return Err(StatusCode::BAD_REQUEST),
+        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -210,7 +236,8 @@ impl TestProvider {
             "token_type": "Bearer",
             "expires_in": 3_600,
             "scope": "openid profile email",
-            "id_token": id_token
+            "id_token": id_token,
+            "refresh_token": refresh_token
         })))
     }
 }
@@ -315,10 +342,12 @@ async fn authorization_code_session_and_logout_round_trip() {
             IdentityAuthentication::new(identity.clone()),
             IdentityAuthentication::authorize,
         ));
-    let application = IdentityHttpApplication::new(identity)
+    let sessions = MemoryStore::default();
+    let application = IdentityHttpApplication::new(identity.clone())
+        .with_session_store(Arc::new(sessions.clone()))
         .router()
         .merge(protected)
-        .layer(IdentitySessionLayer::new(configuration.cookie()).memory());
+        .layer(IdentitySessionLayer::new(configuration.cookie()).store(sessions.clone()));
 
     let rejected_return = application
         .clone()
@@ -479,6 +508,48 @@ async fn authorization_code_session_and_logout_round_trip() {
     let anti_forgery_token = session
         .anti_forgery_token
         .expect("logout anti-forgery token");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(session.expires_at_epoch_seconds.unwrap() > now + 3_600);
+
+    // Force the provider credential into its refresh window. The renewable
+    // live binding rotates it server-side while retaining the local session ID.
+    let session_id: Id = authenticated_cookie
+        .split_once('=')
+        .unwrap()
+        .1
+        .parse()
+        .unwrap();
+    let mut record = sessions.load(&session_id).await.unwrap().unwrap();
+    let inactivity_before_refresh = record.expiry_date;
+    record.data.get_mut("identity.authenticated").unwrap()["identity_expires_at_epoch_seconds"] =
+        json!(now + 1);
+    sessions.save(&record).await.unwrap();
+    let browser = Session::new(Some(session_id), Arc::new(sessions.clone()), None);
+    let user = identity.authenticated_user(&browser).await.unwrap();
+    let login = identity
+        .live_browser_login(
+            &browser,
+            &user,
+            Arc::new(sessions.clone()),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let refreshed = login.current().await.unwrap();
+    assert_eq!(provider.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        sessions
+            .load(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .expiry_date,
+        inactivity_before_refresh
+    );
+    assert!(refreshed.valid_until_epoch_ms() > (now + 300) * 1_000);
 
     for request in [
         Request::builder()
@@ -587,3 +658,6 @@ async fn authorization_code_session_and_logout_round_trip() {
         serde_json::from_slice(&revoked.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(revoked.status, AuthenticationStatus::Anonymous);
 }
+
+#[path = "browser_flow/activity.rs"]
+mod activity;

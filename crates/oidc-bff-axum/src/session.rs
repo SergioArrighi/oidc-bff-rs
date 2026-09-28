@@ -10,7 +10,7 @@ use tower_sessions::{
 use crate::{IdentityError, SessionCookieConfiguration};
 
 const PENDING_LOGIN_KEY: &str = "identity.pending_login";
-const AUTHENTICATED_SESSION_KEY: &str = "identity.authenticated";
+pub(crate) const AUTHENTICATED_SESSION_KEY: &str = "identity.authenticated";
 
 mod live_login;
 pub use live_login::{
@@ -52,7 +52,17 @@ pub(crate) struct AuthenticatedIdentitySession {
     pub profile: UserProfile,
     pub authentication_session_id: String,
     pub anti_forgery_token: String,
+    /// Fixed local BFF-session deadline exposed to the browser.
     pub expires_at_epoch_seconds: u64,
+    /// Current provider identity-token deadline. Old, non-refreshable sessions omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_expires_at_epoch_seconds: Option<u64>,
+    /// Provider refresh credential, retained only in the encrypted server-side session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Original authorization nonce, used only if a refreshed ID token repeats a nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_nonce: Option<String>,
 }
 
 impl std::fmt::Debug for AuthenticatedIdentitySession {
@@ -63,6 +73,18 @@ impl std::fmt::Debug for AuthenticatedIdentitySession {
             .field("authentication_session_id", &"[REDACTED]")
             .field("anti_forgery_token", &"[REDACTED]")
             .field("expires_at_epoch_seconds", &self.expires_at_epoch_seconds)
+            .field(
+                "identity_expires_at_epoch_seconds",
+                &self.identity_expires_at_epoch_seconds,
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "refresh_nonce",
+                &self.refresh_nonce.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -204,6 +226,9 @@ mod debug_tests {
             authentication_session_id: "authentication-secret".to_owned(),
             anti_forgery_token: "anti-forgery-secret".to_owned(),
             expires_at_epoch_seconds: 2,
+            identity_expires_at_epoch_seconds: Some(2),
+            refresh_token: Some("refresh-secret".to_owned()),
+            refresh_nonce: Some("refresh-nonce-secret".to_owned()),
         };
 
         let output = format!("{pending:?} {authenticated:?}");
@@ -217,6 +242,8 @@ mod debug_tests {
             "Private Name",
             "authentication-secret",
             "anti-forgery-secret",
+            "refresh-secret",
+            "refresh-nonce-secret",
         ] {
             assert!(!output.contains(secret));
         }

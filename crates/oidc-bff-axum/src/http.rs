@@ -7,7 +7,8 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use tower_sessions::Session;
+use std::sync::Arc;
+use tower_sessions::{Session, SessionStore};
 
 use crate::{IdentityApplication, IdentityError};
 
@@ -17,6 +18,8 @@ const FETCH_SITE_HEADER: &str = "sec-fetch-site";
 #[derive(Clone, Debug, Default, Deserialize)]
 struct LoginQuery {
     return_to: Option<String>,
+    #[serde(default)]
+    reauthenticate: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -30,12 +33,23 @@ struct CallbackQuery {
 /// Fixed same-origin login, callback, session, and logout HTTP service.
 pub struct IdentityHttpApplication {
     application: IdentityApplication,
+    sessions: Option<Arc<dyn SessionStore>>,
 }
 
 impl IdentityHttpApplication {
     /// Binds the route service to a discovered identity application.
     pub fn new(application: IdentityApplication) -> Self {
-        Self { application }
+        Self {
+            application,
+            sessions: None,
+        }
+    }
+
+    /// Enables authoritative inactivity deadlines and explicit browser activity.
+    /// Supply the same (decrypting) store used by IdentitySessionLayer.
+    pub fn with_session_store(mut self, sessions: Arc<dyn SessionStore>) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 
     /// Builds the `/auth/*` router backed by the discovered identity application.
@@ -44,6 +58,7 @@ impl IdentityHttpApplication {
             .route("/auth/login", get(Self::login))
             .route("/auth/callback", get(Self::callback))
             .route("/auth/session", get(Self::session))
+            .route("/auth/session/activity", post(Self::activity))
             .route("/auth/logout", post(Self::logout))
             .layer(middleware::map_response(Self::apply_response_policy))
             .with_state(self)
@@ -54,10 +69,16 @@ impl IdentityHttpApplication {
         session: Session,
         Query(query): Query<LoginQuery>,
     ) -> Result<Response, IdentityError> {
-        let destination = http
+        let mut destination = http
             .application
             .begin_login(&session, query.return_to.as_deref())
             .await?;
+        if query.reauthenticate {
+            destination
+                .query_pairs_mut()
+                .append_pair("prompt", "login")
+                .append_pair("max_age", "0");
+        }
         Ok(Self::redirect(destination.as_str()))
     }
 
@@ -85,7 +106,66 @@ impl IdentityHttpApplication {
         State(http): State<Self>,
         session: Session,
     ) -> Result<impl IntoResponse, IdentityError> {
-        Ok(Json(http.application.session(&session).await?))
+        let projection = match &http.sessions {
+            Some(store) => tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                http.application
+                    .browser_session_activity(&session, store.as_ref(), None),
+            )
+            .await
+            .map_err(|_| IdentityError::Session)??,
+            None => http.application.session(&session).await?,
+        };
+        http.session_response(&session, projection)
+    }
+
+    async fn activity(
+        State(http): State<Self>,
+        session: Session,
+        headers: HeaderMap,
+    ) -> Result<Response, IdentityError> {
+        let protection = BrowserRequestProtection::new(&Method::POST, &headers);
+        let token = protection
+            .validate(&http.application)?
+            .ok_or(IdentityError::CsrfRejected)?;
+        let store = http.sessions.as_ref().ok_or(IdentityError::Session)?;
+        let projection = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            http.application
+                .browser_session_activity(&session, store.as_ref(), Some(token)),
+        )
+        .await
+        .map_err(|_| IdentityError::Session)??;
+        if projection.inactivity_expires_at_epoch_seconds.is_none() {
+            return Err(IdentityError::AuthenticationRequired);
+        }
+        http.session_response(&session, projection)
+    }
+
+    fn session_response(
+        &self,
+        session: &Session,
+        projection: oidc_bff_core::IdentitySession,
+    ) -> Result<Response, IdentityError> {
+        let cookie = projection
+            .inactivity_expires_at_epoch_seconds
+            .map(|deadline| {
+                session
+                    .id()
+                    .map(|id| self.application.renewed_browser_cookie(id, deadline))
+                    .ok_or(IdentityError::AuthenticationRequired)
+            })
+            .transpose()?;
+        let mut response = Json(projection).into_response();
+        if let Some(cookie) = cookie {
+            // Reconcile a missed renewal response without extending the stored
+            // deadline. Status polling still cannot keep an idle login alive.
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_str(&cookie).map_err(|_| IdentityError::Session)?,
+            );
+        }
+        Ok(response)
     }
 
     async fn logout(

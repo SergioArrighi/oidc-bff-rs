@@ -95,6 +95,9 @@ impl Fixture {
             authentication_session_id: user.authentication_session_id.clone(),
             anti_forgery_token: "PRIVATE_CSRF".to_owned(),
             expires_at_epoch_seconds: absolute_seconds,
+            identity_expires_at_epoch_seconds: None,
+            refresh_token: None,
+            refresh_nonce: None,
         };
         let id = Id::default();
         let record = Record {

@@ -28,6 +28,8 @@ pub struct IdentitySession {
     pub anti_forgery_token: Option<String>,
     /// Absolute session expiry in Unix epoch seconds.
     pub expires_at_epoch_seconds: Option<u64>,
+    /// Persisted inactivity deadline, bounded by the absolute deadline.
+    pub inactivity_expires_at_epoch_seconds: Option<u64>,
     /// Same-origin sign-in path.
     pub sign_in_path: String,
     /// Same-origin sign-out path.
@@ -82,6 +84,7 @@ impl IdentitySession {
             profile: None,
             anti_forgery_token: None,
             expires_at_epoch_seconds: None,
+            inactivity_expires_at_epoch_seconds: None,
             sign_in_path: sign_in_path.into(),
             sign_out_path: sign_out_path.into(),
             account_url: account_url.into(),
@@ -102,6 +105,7 @@ impl IdentitySession {
                 self.profile.is_none()
                     && self.anti_forgery_token.is_none()
                     && self.expires_at_epoch_seconds.is_none()
+                    && self.inactivity_expires_at_epoch_seconds.is_none()
             }
             AuthenticationStatus::Authenticated => {
                 self.profile.is_some()
@@ -109,7 +113,11 @@ impl IdentitySession {
                     && self.expires_at_epoch_seconds.is_some()
             }
         };
-        if !anti_forgery_token_is_valid || !state_is_valid {
+        let deadlines_valid = self.inactivity_expires_at_epoch_seconds.is_none_or(|idle| {
+            self.expires_at_epoch_seconds
+                .is_some_and(|absolute| idle <= absolute)
+        });
+        if !anti_forgery_token_is_valid || !state_is_valid || !deadlines_valid {
             return Err(IdentitySessionValidationError::Session);
         }
         Ok(self)
@@ -153,6 +161,7 @@ struct IdentitySessionWire {
     profile: Option<UserProfile>,
     anti_forgery_token: Option<String>,
     expires_at_epoch_seconds: Option<u64>,
+    inactivity_expires_at_epoch_seconds: Option<u64>,
     sign_in_path: String,
     sign_out_path: String,
     account_url: String,
@@ -169,6 +178,7 @@ impl<'de> Deserialize<'de> for IdentitySession {
             profile: wire.profile,
             anti_forgery_token: wire.anti_forgery_token,
             expires_at_epoch_seconds: wire.expires_at_epoch_seconds,
+            inactivity_expires_at_epoch_seconds: wire.inactivity_expires_at_epoch_seconds,
             sign_in_path: wire.sign_in_path,
             sign_out_path: wire.sign_out_path,
             account_url: wire.account_url,
@@ -286,6 +296,7 @@ mod tests {
             }),
             anti_forgery_token: Some("secret-anti-forgery-value".to_owned()),
             expires_at_epoch_seconds: Some(1),
+            inactivity_expires_at_epoch_seconds: Some(1),
             sign_in_path: "/auth/login".to_owned(),
             sign_out_path: "/auth/logout".to_owned(),
             account_url: "https://identity.example.com/account".to_owned(),

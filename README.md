@@ -6,7 +6,9 @@ exposing a small, bounded identity projection to browser applications.
 
 Its scope is a session BFF for a co-located resource server. The authorization
 response access token is validated when required by OIDC and then discarded;
-this is not a generic token relay or refresh-token vault.
+this is not a generic token relay. A provider refresh credential may be retained
+only inside the encrypted server session to sustain the same bounded browser
+login during a long-running native operation.
 
 ## Crates
 
@@ -22,8 +24,12 @@ belong to the integrating application or platform.
 
 For long-running server operations, Axum integrations can use
 [live browser-login observations](docs/live-browser-login.md) to recheck the
-original persisted login without renewing it. This supplements, rather than
-replaces, the host's current authorization checks.
+original persisted login. The plain handle is read-only; a handle minted by
+`IdentityApplication` may renew provider identity without moving
+the original local absolute deadline. This supplements, rather than replaces,
+the host's current authorization checks.
+Inactivity renewal is separate, via CSRF-protected browser activity that renews
+the stored deadline and cookie together; unattended background work does not count.
 
 ## Development
 

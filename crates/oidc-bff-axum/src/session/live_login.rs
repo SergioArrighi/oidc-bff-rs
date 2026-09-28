@@ -1,13 +1,18 @@
-//! Fresh, read-only browser-login observations for long-running native operations.
-//! This is not a provider revocation feed, session-renewal service or corpus lease.
+//! Fresh browser-login observations for long-running native operations.
+//! The plain binding remains read-only. IdentityApplication may bind a renewable
+//! handle which rotates a server-side refresh credential without renewing inactivity,
+//! always within the original local absolute deadline.
 use super::{AUTHENTICATED_SESSION_KEY, AuthenticatedIdentitySession};
-use crate::{AuthenticatedUser, AuthenticationMethod, AuthenticationPrincipalKind};
+use crate::{
+    AuthenticatedUser, AuthenticationMethod, AuthenticationPrincipalKind, IdentityApplication,
+    application::PROVIDER_REFRESH_MARGIN_SECONDS,
+};
 use oidc_bff_core::UserSubject;
 use std::{
     fmt, io,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -15,6 +20,7 @@ use tower_sessions::{Session, SessionStore, session::Id};
 use zeroize::Zeroizing;
 
 const MAXIMUM_STATE_BYTES: usize = 1024 * 1024;
+const RENEWAL_RETRY_BACKOFF_MILLISECONDS: u64 = 10_000;
 
 /// Bounds a single authoritative store read; never a model-generation deadline.
 #[derive(Clone, Copy, Debug)]
@@ -51,7 +57,7 @@ pub enum LiveBrowserLoginError {
 /// `SessionStore` alone does not guarantee freshness: independently stale caches
 /// or read replicas are not suitable. Its `load` must not renew session lifetime.
 /// A failed check permanently invalidates this handle and all its clones. A new
-/// request may establish a new handle; this object never switches logins or renews.
+/// request may establish a new handle; this object never switches logins.
 #[derive(Clone)]
 pub struct LiveBrowserLogin {
     inner: Arc<LiveLoginBinding>,
@@ -62,6 +68,8 @@ struct LiveLoginBinding {
     anchor: LoginAnchor,
     absolute_deadline_epoch_ms: u64,
     limits: LiveBrowserLoginLimits,
+    application: Option<IdentityApplication>,
+    renew_at_epoch_ms: AtomicU64,
     invalidated: AtomicBool,
 }
 
@@ -78,6 +86,7 @@ pub struct CurrentBrowserLogin {
     checked_at_epoch_ms: u64,
     valid_until_epoch_ms: u64,
     absolute_deadline_epoch_ms: u64,
+    renew_at_epoch_ms: u64,
 }
 
 impl CurrentBrowserLogin {
@@ -122,6 +131,26 @@ impl LiveBrowserLogin {
         store: Arc<dyn SessionStore>,
         limits: LiveBrowserLoginLimits,
     ) -> Result<Self, LiveBrowserLoginError> {
+        Self::bind_inner(session, authenticated, store, limits, None).await
+    }
+
+    pub(crate) async fn bind_refreshable(
+        session: &Session,
+        authenticated: &AuthenticatedUser,
+        store: Arc<dyn SessionStore>,
+        limits: LiveBrowserLoginLimits,
+        application: IdentityApplication,
+    ) -> Result<Self, LiveBrowserLoginError> {
+        Self::bind_inner(session, authenticated, store, limits, Some(application)).await
+    }
+
+    async fn bind_inner(
+        session: &Session,
+        authenticated: &AuthenticatedUser,
+        store: Arc<dyn SessionStore>,
+        limits: LiveBrowserLoginLimits,
+        application: Option<IdentityApplication>,
+    ) -> Result<Self, LiveBrowserLoginError> {
         if !(Duration::from_millis(10)..=Duration::from_secs(30)).contains(&limits.read_timeout) {
             return Err(LiveBrowserLoginError::InvalidLimits);
         }
@@ -145,6 +174,17 @@ impl LiveBrowserLogin {
                 authenticated.authentication_session_id.clone(),
             ),
         };
+        if let Some(application) = application.as_ref() {
+            application
+                .renew_live_browser_login(
+                    store.as_ref(),
+                    &anchor.session_id,
+                    &anchor.subject,
+                    &anchor.authentication_session_id,
+                    limits,
+                )
+                .await?;
+        }
         let current = StoredLoginRead::load(store.as_ref(), &anchor, limits, None).await?;
         Ok(Self {
             inner: Arc::new(LiveLoginBinding {
@@ -152,6 +192,8 @@ impl LiveBrowserLogin {
                 anchor,
                 absolute_deadline_epoch_ms: current.absolute_deadline_epoch_ms,
                 limits,
+                application,
+                renew_at_epoch_ms: AtomicU64::new(current.renew_at_epoch_ms),
                 invalidated: AtomicBool::new(false),
             }),
         })
@@ -165,7 +207,25 @@ impl LiveBrowserLogin {
         if self.inner.invalidated.load(Ordering::Acquire) {
             return Err(LiveBrowserLoginError::NotCurrent);
         }
-        let current = StoredLoginRead::load(
+        let now = CurrentBrowserLogin::now_epoch_ms()?;
+        let attempted_renewal = if let Some(application) = self.inner.application.as_ref()
+            && now >= self.inner.renew_at_epoch_ms.load(Ordering::Acquire)
+        {
+            application
+                .renew_live_browser_login(
+                    self.inner.store.as_ref(),
+                    &self.inner.anchor.session_id,
+                    &self.inner.anchor.subject,
+                    &self.inner.anchor.authentication_session_id,
+                    self.inner.limits,
+                )
+                .await
+                .inspect_err(|_| self.inner.invalidated.store(true, Ordering::Release))?;
+            true
+        } else {
+            false
+        };
+        let mut current = StoredLoginRead::load(
             self.inner.store.as_ref(),
             &self.inner.anchor,
             self.inner.limits,
@@ -178,6 +238,14 @@ impl LiveBrowserLogin {
         if self.inner.invalidated.load(Ordering::Acquire) {
             return Err(LiveBrowserLoginError::NotCurrent);
         }
+        if attempted_renewal && current.renew_at_epoch_ms <= now {
+            current.renew_at_epoch_ms = now
+                .saturating_add(RENEWAL_RETRY_BACKOFF_MILLISECONDS)
+                .min(current.valid_until_epoch_ms.saturating_sub(1));
+        }
+        self.inner
+            .renew_at_epoch_ms
+            .store(current.renew_at_epoch_ms, Ordering::Release);
         Ok(current)
     }
 }
@@ -230,7 +298,17 @@ impl StoredLoginRead {
             .checked_mul(1000)
             .ok_or(LiveBrowserLoginError::InvalidState)?;
         let absolute = pinned_absolute.map_or(absolute, |pinned| pinned.min(absolute));
-        let valid_until = inactivity_deadline.min(absolute);
+        let identity_deadline = match (
+            authenticated.identity_expires_at_epoch_seconds,
+            authenticated.refresh_token.as_ref(),
+        ) {
+            (Some(expiry), Some(_)) => expiry
+                .checked_mul(1000)
+                .ok_or(LiveBrowserLoginError::InvalidState)?,
+            (None, None) => absolute,
+            _ => return Err(LiveBrowserLoginError::InvalidState),
+        };
+        let valid_until = inactivity_deadline.min(absolute).min(identity_deadline);
         let now = CurrentBrowserLogin::now_epoch_ms()?;
         if valid_until <= now {
             return Err(LiveBrowserLoginError::NotCurrent);
@@ -248,6 +326,8 @@ impl StoredLoginRead {
             checked_at_epoch_ms: now,
             valid_until_epoch_ms: valid_until,
             absolute_deadline_epoch_ms: absolute,
+            renew_at_epoch_ms: identity_deadline
+                .saturating_sub(PROVIDER_REFRESH_MARGIN_SECONDS * 1000),
         })
     }
 }

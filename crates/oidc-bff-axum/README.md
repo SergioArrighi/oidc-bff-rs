@@ -87,8 +87,15 @@ not production storage. Read the repository
 [production security profile](../../docs/oidc-bff-security.md) before deploying.
 
 For long-running native operations, the optional use of
-[`LiveBrowserLogin`](../../docs/live-browser-login.md) provides fresh, read-only
-observations of an exact persisted browser login. It does not renew sessions or
-replace application authorization and provider-revocation policy.
+[`LiveBrowserLogin`](../../docs/live-browser-login.md) provides fresh
+observations of an exact persisted browser login. `LiveBrowserLogin::bind` is
+read-only; `IdentityApplication::live_browser_login` can rotate the encrypted
+server-held refresh credential within the original local absolute deadline.
+Human activity is separate: supply the authoritative store with
+`IdentityHttpApplication::with_session_store` to enable CSRF-protected
+`POST /auth/session/activity`. This renews the record and cookie together;
+`GET /auth/session` reports the stored inactivity deadline without extending it.
+Neither replaces application authorization or an explicit
+provider-revocation policy.
 
 Licensed under the MIT License.
