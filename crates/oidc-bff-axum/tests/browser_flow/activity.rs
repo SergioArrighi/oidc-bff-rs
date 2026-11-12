@@ -150,7 +150,12 @@ async fn human_activity_renews_cookie_and_record_but_polling_and_provider_refres
         )
         .await
         .unwrap();
-    live.current().await.unwrap();
+    let before = live.current().await.unwrap();
+    assert_eq!(
+        before.absolute_deadline_epoch_ms(),
+        absolute.as_u64().unwrap() * 1000
+    );
+    assert!(before.valid_until_epoch_ms() < before.absolute_deadline_epoch_ms());
     let refreshed = f.sessions.load(&f.id).await.unwrap().unwrap();
     assert_eq!(refreshed.expiry_date, record.expiry_date);
     assert_eq!(
@@ -203,6 +208,12 @@ async fn human_activity_renews_cookie_and_record_but_polling_and_provider_refres
         Some(renewed.expiry_date.unix_timestamp() as u64)
     );
     assert!(renewed.expiry_date >= now + time::Duration::seconds(3_598));
+    let after = live.current().await.unwrap();
+    assert_eq!(
+        after.absolute_deadline_epoch_ms(),
+        before.absolute_deadline_epoch_ms()
+    );
+    assert!(after.valid_until_epoch_ms() > before.valid_until_epoch_ms());
     assert_eq!(
         renewed.data["identity.authenticated"]["expires_at_epoch_seconds"],
         absolute
