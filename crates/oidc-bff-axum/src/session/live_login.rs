@@ -101,6 +101,13 @@ impl CurrentBrowserLogin {
         self.valid_until_epoch_ms
     }
 
+    /// Immutable upper bound for delegated execution. A caller must still
+    /// monitor `LiveBrowserLogin::current` for inactivity, logout and revocation;
+    /// this deadline alone is never sufficient authority to continue access.
+    pub fn absolute_deadline_epoch_ms(&self) -> u64 {
+        self.absolute_deadline_epoch_ms
+    }
+
     fn now_epoch_ms() -> Result<u64, LiveBrowserLoginError> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

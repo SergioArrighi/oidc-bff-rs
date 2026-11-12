@@ -155,6 +155,18 @@ uses the AWS-LC backend. The fake provider's private RSA operation is test-only.
 This is a reviewed, narrow exception—not a claim that the advisory is fixed.
 Remove it when the upstream OIDC dependency offers a non-vulnerable backend.
 
+`RUSTSEC-2026-0387` affects secret-integer operations in `crypto-bigint 0.5.5`,
+pulled in by `openidconnect` through its P-256/P-384 implementations. This BFF
+restricts ID-token verification to RS256 at login and refresh and does not use
+those elliptic-curve implementations for signing, key exchange or private-key
+arithmetic. Access-token verification also requires RS256 and uses AWS-LC.
+The affected secret-integer operations are therefore outside the supported
+authentication paths. CI records this second narrow reachability exception;
+the dependency remains vulnerable in other uses. Reassess it before enabling
+elliptic-curve algorithms or private-key operations, and remove it when the
+upstream dependency supports `crypto-bigint >=0.7.6`. Advisory:
+https://rustsec.org/advisories/RUSTSEC-2026-0387.html.
+
 The audit also reports unmaintained proc-macro dependencies below Leptos. They
 execute at build time and are not linked into the WASM/runtime artifact, but
 they remain supply-chain inputs. Dependabot and the CI audit keep them visible;
